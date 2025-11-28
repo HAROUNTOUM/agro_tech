@@ -71,19 +71,25 @@ Follow the steps below to get the project running on your local machine.
 ## File Structure
 
 ```
-/crop-yield-prediction
-│
-├── app.py                     # Main Flask application
-├── crop_yield.csv             # Dataset used for training the model (optional)
-├── best_model.pkl             # Pretrained model used for predictions
-├── label_encoders.pkl         # Label encoders used to encode categorical features
-├── unique_values.pkl          # Unique values for crops, states, and seasons
-├── median_values.pkl          # Median values for optional features
-├── requirements.txt           # List of Python dependencies
-├── /templates                 # HTML templates
-│   ├── index.html             # Form for prediction
-│   └── result.html            # Displays the prediction result
-└── /static                    # Static files like CSS, JS (if used)
+.git/
+.gitattributes
+app.py
+app2.py
+best_model_augmented.pkl
+Crop_recommendation_augmented.csv
+crop_yield.csv
+crop_yield_augmented.csv
+label_encoders.pkl
+main.py
+median_values.pkl
+minmaxscaler_first.pkl
+model_first.pkl
+README.md
+requirements.txt
+standscaler.pkl
+training_progress.png
+unique_values.pkl
+venv/
 ```
 
 ## Usage
@@ -127,3 +133,4 @@ If you'd like to contribute to this project, feel free to fork the repository, c
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
