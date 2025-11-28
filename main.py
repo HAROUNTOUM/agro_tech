@@ -117,22 +117,29 @@ def full_analysis():
             temp = float(data.get('Temperature', 0))
             humidity = float(data.get('Humidity', 0))
             ph = float(data.get('Ph', data.get('pH', 0)))
-            rainfall = float(data.get('Rainfall', 0))
+            # Make Rainfall optional: parse it if provided, otherwise leave as None
+            raw_rainfall = data.get('Rainfall', None)
+            if raw_rainfall in (None, ''):
+                rainfall = None
+            else:
+                rainfall = float(raw_rainfall)
         except (ValueError, TypeError) as e:
             return jsonify({
                 'success': False,
                 'error': f'All soil and climate parameters must be valid numbers: {str(e)}'
             }), 400
 
-        # Validate input parameters
-        if not all([N, P, K, temp, humidity, ph, rainfall]):
+        # Validate input parameters (Rainfall is optional)
+        if not all([N, P, K, temp, humidity, ph]):
             return jsonify({
                 'success': False,
-                'error': 'All parameters are required: Nitrogen, Phosphorus, Potassium, Temperature, Humidity, Ph, Rainfall'
+                'error': 'All parameters are required: Nitrogen, Phosphorus, Potassium, Temperature, Humidity, Ph'
             }), 400
 
         # ===== STEP 3: Get TOP 5 crop predictions using model_first =====
-        feature_list = [N, P, K, temp, humidity, ph, rainfall]
+        # Use a fallback numeric value for the crop-recommendation model if rainfall is missing
+        rainfall_for_model = float(rainfall) if rainfall is not None else 0.0
+        feature_list = [N, P, K, temp, humidity, ph, rainfall_for_model]
         single_pred = np.array(feature_list).reshape(1, -1)
 
         scaled_features = ms.transform(single_pred)
@@ -162,12 +169,28 @@ def full_analysis():
 
         # Crop dictionary mapping
         crop_dict = {
-            1: "Rice", 2: "Maize", 3: "Jute", 4: "Cotton", 5: "Coconut",
-            6: "Papaya", 7: "Orange", 8: "Apple", 9: "Muskmelon",
-            10: "Watermelon", 11: "Grapes", 12: "Mango", 13: "Banana",
-            14: "Pomegranate", 15: "Lentil", 16: "Blackgram", 17: "Mungbean",
-            18: "Mothbeans", 19: "Pigeonpeas", 20: "Kidneybeans",
-            21: "Chickpea", 22: "Coffee"
+            1: "Rice",
+            2: "Maize",
+            3: "Jute",
+            4: "Cotton",
+            5: "Coconut",
+            6: "Papaya",
+            7: "Orange",
+            8: "Apple",
+            9: "Muskmelon",
+            10: "Watermelon",
+            11: "Grapes",
+            12: "Mango",
+            13: "Banana",
+            14: "Pomegranate",
+            15: "Lentil",
+            16: "Blackgram",
+            17: "Mungbean",
+            18: "Mothbeans",
+            19: "Pigeonpeas",
+            20: "Kidneybeans",
+            21: "Chickpea",
+            22: "Coffee"
         }
 
         # Convert encoded predictions to crop names
@@ -257,7 +280,16 @@ def full_analysis():
         # Get numerical parameters with defaults
         try:
             crop_year = float(data.get('crop_year', median_values.get('Crop_Year', 2020)))
-            annual_rainfall = float(data.get('annual_rainfall', median_values.get('Annual_Rainfall', 1000)))
+            # Map incoming 'Rainfall' to 'annual_rainfall' when the latter isn't provided
+            if data.get('annual_rainfall') not in (None, ""):
+                annual_rainfall = float(data.get('annual_rainfall'))
+            else:
+                # use the previously parsed `rainfall` (from 'Rainfall' key) or median if not available
+                try:
+                    annual_rainfall = float(rainfall)
+                except Exception:
+                    annual_rainfall = float(median_values.get('Annual_Rainfall', 1000))
+
             fertilizer = float(data.get('fertilizer', median_values.get('Fertilizer', 100)))
             pesticide = float(data.get('pesticide', median_values.get('Pesticide', 100)))
         except (ValueError, TypeError) as e:
@@ -288,6 +320,9 @@ def full_analysis():
 
         best_crop = None
         best_yield = -999  # Initialize with a very low value
+        # Track best crop by revenue (uses area_hectares if provided, otherwise per-hectare)
+        best_crop_by_revenue = None
+        best_revenue = -float('inf')
         all_crop_predictions = []
 
         for crop in top_5_crops:
@@ -341,16 +376,25 @@ def full_analysis():
                 prediction_yield = best_model.predict(input_data)
                 predicted_yield = float(prediction_yield[0])
 
+                price_per_ton = CROP_PRICES.get(crop, 0)
+                revenue_per_hectare = predicted_yield * price_per_ton
+                # If the caller provided an area, compute total revenue for that area; otherwise use 1 hectare
+                area_for_calc = area_hectares if area_hectares is not None else 1
+                total_revenue = revenue_per_hectare * area_for_calc
+
                 crop_info = {
                     'crop': crop,
                     'available_in_yield_model': True,
                     'predicted_yield': round(predicted_yield, 2),
                     'is_positive': predicted_yield > 0,
-                    'price_per_ton': CROP_PRICES.get(crop, 0)
+                    'price_per_ton': price_per_ton,
+                    'revenue_per_hectare': round(revenue_per_hectare, 2),
+                    'area_used_for_revenue': area_for_calc,
+                    'total_revenue_for_area': round(total_revenue, 2)
                 }
 
-                # Add revenue calculation if area is provided
-                if area_hectares and predicted_yield > 0:
+                # Also include detailed revenue calculation object when an explicit area was given
+                if area_hectares is not None and predicted_yield > 0:
                     revenue_calc = calculate_revenue(crop, predicted_yield, area_hectares)
                     if revenue_calc:
                         crop_info['revenue_calculation'] = revenue_calc
@@ -366,6 +410,16 @@ def full_analysis():
                         best_crop = crop
                         best_yield = predicted_yield
                         print(f"NEW BEST: {best_crop} with yield {best_yield}")
+
+                # Track best crop by total revenue (or per-hectare when area not provided)
+                try:
+                    if total_revenue > best_revenue:
+                        best_crop_by_revenue = crop
+                        best_revenue = total_revenue
+                        print(f"NEW BEST BY REVENUE: {best_crop_by_revenue} with revenue {best_revenue}")
+                except Exception:
+                    # In case revenue comparison fails, skip
+                    pass
 
             except Exception as e:
                 all_crop_predictions.append({
@@ -386,10 +440,22 @@ def full_analysis():
             # Find the crop with the highest yield (even if negative)
             valid_predictions = [c for c in all_crop_predictions if c.get('predicted_yield') is not None]
             if valid_predictions:
-                valid_predictions.sort(key=lambda x: x.get('predicted_yield', -999), reverse=True)
-                best_crop = valid_predictions[0]['crop']
-                best_yield = valid_predictions[0]['predicted_yield']
-                print(f"FALLBACK SELECTION: {best_crop} with yield {best_yield}")
+                # Prefer highest revenue if available, otherwise fall back to highest yield
+                # Ensure revenue fields exist
+                revenue_available = any('total_revenue_for_area' in c for c in valid_predictions)
+                if revenue_available:
+                    valid_predictions.sort(key=lambda x: x.get('total_revenue_for_area', -float('inf')), reverse=True)
+                    best_crop_by_revenue = valid_predictions[0]['crop']
+                    best_revenue = valid_predictions[0].get('total_revenue_for_area', best_revenue)
+                    # Also set best_crop/best_yield for backward compatibility
+                    best_crop = valid_predictions[0]['crop']
+                    best_yield = valid_predictions[0].get('predicted_yield', best_yield)
+                    print(f"FALLBACK SELECTION BY REVENUE: {best_crop_by_revenue} with revenue {best_revenue}")
+                else:
+                    valid_predictions.sort(key=lambda x: x.get('predicted_yield', -999), reverse=True)
+                    best_crop = valid_predictions[0]['crop']
+                    best_yield = valid_predictions[0]['predicted_yield']
+                    print(f"FALLBACK SELECTION: {best_crop} with yield {best_yield}")
 
         # ===== STEP 8: Prepare response =====
         if best_crop is None:
@@ -437,14 +503,25 @@ def full_analysis():
                 yield_comparison.append(f"{crop_info['crop']}: {crop_info['predicted_yield']} tons/ha")
 
         # ===== STEP 10: Return successful prediction =====
+        # Prefer recommendation by revenue when available
+        recommended_crop = best_crop_by_revenue if best_crop_by_revenue is not None else best_crop
+
+        # Find revenue details for the recommended-by-revenue crop (if any)
+        best_rev_info = None
+        if best_crop_by_revenue is not None:
+            for c in all_crop_predictions:
+                if c.get('crop') == best_crop_by_revenue:
+                    best_rev_info = c
+                    break
+
         response = {
             'success': True,
             'crop_recommendation': {
-                'recommended_crop': best_crop,
-                'recommendation_basis': 'Highest positive yield from soil and climate analysis',
+                'recommended_crop': recommended_crop,
+                'recommendation_basis': 'Highest expected revenue for given area' if best_crop_by_revenue is not None else 'Highest positive yield from soil and climate analysis',
                 'suitable_for': f'{state} region during {season} season',
                 'ranking': f'Best yield among {crops_with_predictions} tested crops',
-                'selection_criteria': 'Crop with maximum predicted yield',
+                'selection_criteria': 'Crop with maximum expected revenue' if best_crop_by_revenue is not None else 'Crop with maximum predicted yield',
                 'yield_comparison': ', '.join(yield_comparison)
             },
             'yield_prediction': {
@@ -479,6 +556,17 @@ def full_analysis():
                 'features_used': feature_columns
             }
         }
+
+        # Attach best-by-revenue summary if available
+        if best_rev_info:
+            response['best_by_revenue'] = {
+                'crop': best_rev_info.get('crop'),
+                'predicted_yield': best_rev_info.get('predicted_yield'),
+                'revenue_per_hectare': best_rev_info.get('revenue_per_hectare'),
+                'area_used_for_revenue': best_rev_info.get('area_used_for_revenue'),
+                'total_revenue_for_area': best_rev_info.get('total_revenue_for_area'),
+                'currency': 'INR'
+            }
 
         # Add revenue calculation if available
         if revenue_info:
